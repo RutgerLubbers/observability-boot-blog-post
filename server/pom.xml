@@ -47,6 +47,12 @@
 			<artifactId>zipkin-reporter-brave</artifactId>
 		</dependency>
 
+		<!-- -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webflux</artifactId>
+		</dependency>
+
 		<!-- For pushing logs out -->
 		<dependency>
 			<groupId>com.github.loki4j</groupId>
