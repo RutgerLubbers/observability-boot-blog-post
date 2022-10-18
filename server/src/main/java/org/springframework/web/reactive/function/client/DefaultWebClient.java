@@ -1,4 +1,4 @@
-package org.springframework.web.reactive.function.client;/*
+/*
  * Copyright 2002-2022 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +14,37 @@ package org.springframework.web.reactive.function.client;/*
  * limitations under the License.
  */
 
+package org.springframework.web.reactive.function.client;
+
+import java.net.URI;
+import java.nio.charset.Charset;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.IntPredicate;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.reactivestreams.Publisher;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.*;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpRequest;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.reactive.ClientHttpRequest;
 import org.springframework.http.client.reactive.ClientHttpResponse;
 import org.springframework.lang.Nullable;
@@ -31,15 +57,6 @@ import org.springframework.web.reactive.function.BodyInserter;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.util.UriBuilder;
 import org.springframework.web.util.UriBuilderFactory;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.util.context.Context;
-
-import java.net.URI;
-import java.nio.charset.Charset;
-import java.time.ZonedDateTime;
-import java.util.*;
-import java.util.function.*;
 
 /**
  * Default implementation of {@link WebClient}.
@@ -56,7 +73,7 @@ class DefaultWebClient implements WebClient {
     private static final Mono<ClientResponse> NO_HTTP_CLIENT_RESPONSE_ERROR = Mono.error(
             () -> new IllegalStateException("The underlying HTTP client completed without emitting a response."));
 
-    private static final DefaultClientObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultClientObservationConvention();
+    private static final DefaultClientRequestObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultClientRequestObservationConvention();
 
     private final ExchangeFunction exchangeFunction;
 
@@ -75,7 +92,7 @@ class DefaultWebClient implements WebClient {
 
     private final ObservationRegistry observationRegistry;
 
-    private final ClientObservationConvention observationConvention;
+    private final ClientRequestObservationConvention observationConvention;
 
     private final DefaultWebClientBuilder builder;
 
@@ -84,7 +101,7 @@ class DefaultWebClient implements WebClient {
                      @Nullable HttpHeaders defaultHeaders, @Nullable MultiValueMap<String, String> defaultCookies,
                      @Nullable Consumer<RequestHeadersSpec<?>> defaultRequest,
                      @Nullable Map<Predicate<HttpStatusCode>, Function<ClientResponse, Mono<? extends Throwable>>> statusHandlerMap,
-                     ObservationRegistry observationRegistry, ClientObservationConvention observationConvention,
+                     ObservationRegistry observationRegistry, ClientRequestObservationConvention observationConvention,
                      DefaultWebClientBuilder builder) {
 
         this.exchangeFunction = exchangeFunction;
@@ -105,9 +122,7 @@ class DefaultWebClient implements WebClient {
                 handlerMap.entrySet().stream()
                         .map(entry -> new DefaultResponseSpec.StatusHandler(entry.getKey(), entry.getValue()))
                         .toList());
-    }
-
-    ;
+    };
 
 
     @Override
@@ -410,7 +425,8 @@ class DefaultWebClient implements WebClient {
                             .flatMap(value -> releaseIfNotConsumed(response).thenReturn(value))
                             .switchIfEmpty(Mono.defer(() -> releaseIfNotConsumed(response).then(Mono.empty())))
                             .onErrorResume(ex -> releaseIfNotConsumed(response, ex));
-                } catch (Throwable ex) {
+                }
+                catch (Throwable ex) {
                     return releaseIfNotConsumed(response, ex);
                 }
             });
@@ -423,7 +439,8 @@ class DefaultWebClient implements WebClient {
                     return responseHandler.apply(response)
                             .concatWith(Flux.defer(() -> releaseIfNotConsumed(response).then(Mono.empty())))
                             .onErrorResume(ex -> releaseIfNotConsumed(response, ex));
-                } catch (Throwable ex) {
+                }
+                catch (Throwable ex) {
                     return releaseIfNotConsumed(response, ex);
                 }
             });
@@ -432,19 +449,21 @@ class DefaultWebClient implements WebClient {
         @Override
         @SuppressWarnings("deprecation")
         public Mono<ClientResponse> exchange() {
+            ClientRequestObservationContext observationContext = new ClientRequestObservationContext();
             ClientRequest request = (this.inserter != null ?
                     initRequestBuilder().body(this.inserter).build() :
                     initRequestBuilder().build());
-
-            ClientObservationContext observationContext = new ClientObservationContext();
-            observationContext.setCarrier(request);
-            observationContext.setUriTemplate((String) request.attribute(URI_TEMPLATE_ATTRIBUTE).orElse(null));
-            Observation observation = ClientObservationDocumentation.HTTP_REQUEST.observation(observationConvention,
-                    DEFAULT_OBSERVATION_CONVENTION, () -> observationContext, observationRegistry).start();
-
             return Mono.defer(() -> {
+
+                // The set carrier must happen before the observation "is made".
+                observationContext.setCarrier(request);
+                Observation observation = ClientHttpObservationDocumentation.HTTP_REQUEST.observation(observationConvention,
+                        DEFAULT_OBSERVATION_CONVENTION, () -> observationContext, observationRegistry).start();
+
+                observationContext.setUriTemplate((String) request.attribute(URI_TEMPLATE_ATTRIBUTE).orElse(null));
+
                 Mono<ClientResponse> responseMono = exchangeFunction.exchange(request)
-                        .checkpoint("Request to " + this.httpMethod.name() + " " + this.uri + " [org.springframework.web.reactive.function.client.DefaultWebClient]")
+                        .checkpoint("Request to " + this.httpMethod.name() + " " + this.uri + " [DefaultWebClient]")
                         .switchIfEmpty(NO_HTTP_CLIENT_RESPONSE_ERROR);
                 if (this.contextModifier != null) {
                     responseMono = responseMono.contextWrite(this.contextModifier);
@@ -480,9 +499,11 @@ class DefaultWebClient implements WebClient {
         private HttpHeaders initHeaders() {
             if (CollectionUtils.isEmpty(this.headers)) {
                 return (defaultHeaders != null ? defaultHeaders : new HttpHeaders());
-            } else if (CollectionUtils.isEmpty(defaultHeaders)) {
+            }
+            else if (CollectionUtils.isEmpty(defaultHeaders)) {
                 return this.headers;
-            } else {
+            }
+            else {
                 HttpHeaders result = new HttpHeaders();
                 result.putAll(defaultHeaders);
                 result.putAll(this.headers);
@@ -493,9 +514,11 @@ class DefaultWebClient implements WebClient {
         private MultiValueMap<String, String> initCookies() {
             if (CollectionUtils.isEmpty(this.cookies)) {
                 return (defaultCookies != null ? defaultCookies : new LinkedMultiValueMap<>());
-            } else if (CollectionUtils.isEmpty(defaultCookies)) {
+            }
+            else if (CollectionUtils.isEmpty(defaultCookies)) {
                 return this.cookies;
-            } else {
+            }
+            else {
                 MultiValueMap<String, String> result = new LinkedMultiValueMap<>();
                 result.putAll(defaultCookies);
                 result.putAll(this.cookies);
@@ -675,7 +698,8 @@ class DefaultWebClient implements WebClient {
                         exMono = handler.apply(response);
                         exMono = exMono.flatMap(ex -> releaseIfNotConsumed(response, ex));
                         exMono = exMono.onErrorResume(ex -> releaseIfNotConsumed(response, ex));
-                    } catch (Throwable ex2) {
+                    }
+                    catch (Throwable ex2) {
                         exMono = releaseIfNotConsumed(response, ex2);
                     }
                     Mono<T> result = exMono.flatMap(Mono::error);
@@ -689,7 +713,7 @@ class DefaultWebClient implements WebClient {
         private <T> Mono<T> insertCheckpoint(Mono<T> result, HttpStatusCode statusCode, HttpRequest request) {
             HttpMethod httpMethod = request.getMethod();
             URI uri = request.getURI();
-            String description = statusCode + " from " + httpMethod + " " + uri + " [org.springframework.web.reactive.function.client.DefaultWebClient]";
+            String description = statusCode + " from " + httpMethod + " " + uri + " [DefaultWebClient]";
             return result.checkpoint(description);
         }
 

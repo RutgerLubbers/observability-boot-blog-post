@@ -192,6 +192,7 @@ final class DefaultClientRequestBuilder implements ClientRequest.Builder {
 
 			this.method = method;
 			this.url = url;
+			// The headers must be writable, otherwise the observation cannot propagate the trace header(s).
 			this.headers = HttpHeaders.writableHttpHeaders(headers);
 			this.cookies = CollectionUtils.unmodifiableMultiValueMap(cookies);
 			this.body = body;

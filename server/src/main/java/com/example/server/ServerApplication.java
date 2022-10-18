@@ -1,10 +1,5 @@
 package com.example.server;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Random;
-import java.util.stream.StreamSupport;
-
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
@@ -14,10 +9,8 @@ import io.micrometer.observation.aop.ObservedAspect;
 import jakarta.servlet.DispatcherType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.slf4j.MDC;
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.actuate.metrics.web.reactive.client.ObservationWebClientCustomizer;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -30,11 +23,14 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.observation.HttpRequestsObservationFilter;
-import org.springframework.web.reactive.function.client.ClientObservationConvention;
+import org.springframework.web.filter.ServerHttpObservationFilter;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+
+import java.util.List;
+import java.util.Random;
+import java.util.stream.StreamSupport;
 
 @SpringBootApplication
 @Import(ExemplarsConfiguration.class)
@@ -46,11 +42,13 @@ public class ServerApplication {
         SpringApplication.run(ServerApplication.class, args);
     }
 
+    //import org.springframework.web.observation.HttpRequestsObservationFilter;
     // tag::filter[]
     // You must set this manually until this is registered in Boot
     @Bean
     FilterRegistrationBean observationWebFilter(ObservationRegistry observationRegistry) {
-        FilterRegistrationBean filterRegistrationBean = new FilterRegistrationBean(new HttpRequestsObservationFilter(observationRegistry));
+
+        FilterRegistrationBean filterRegistrationBean = new FilterRegistrationBean(new ServerHttpObservationFilter(observationRegistry));
         filterRegistrationBean.setDispatcherTypes(DispatcherType.ASYNC, DispatcherType.ERROR, DispatcherType.FORWARD,
                 DispatcherType.INCLUDE, DispatcherType.REQUEST);
         filterRegistrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE);
